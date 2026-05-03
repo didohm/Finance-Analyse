@@ -5,3 +5,4 @@ requests
 plotly
 yfinance
 openpyxl
+matplotlib
