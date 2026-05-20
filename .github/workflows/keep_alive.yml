@@ -2,9 +2,8 @@ name: Keep Streamlit App Alive
 
 on:
   schedule:
-    # سيتم تشغيل هذا الأمر تلقائيًا كل يومين (الساعة 12:00 مساءً بتوقيت جرينتش)
     - cron: '0 12 */2 * *'
-  workflow_dispatch: # يتيح لك تشغيل الأمر يدويًا للتجربة
+  workflow_dispatch:
 
 jobs:
   ping_app:
@@ -15,8 +14,6 @@ jobs:
 
       - name: Set up Python
         uses: actions/setup-python@v5
-        with:
-          python-cache-dependency-path: true
 
       - name: Install Playwright (Virtual Browser)
         run: |
@@ -30,17 +27,9 @@ jobs:
           import time
 
           with sync_playwright() as p:
-              # فتح متصفح كروم خفي
               browser = p.chromium.launch(headless=True)
               page = browser.new_page()
-              
-              print('Visiting Streamlit App...')
-              # اذهب إلى رابط تطبيقك
               page.goto('https://finance-analyse2026.streamlit.app', wait_until='networkidle')
-              
-              # الانتظار لمدة 15 ثانية للتأكد من تحميل الـ WebSockets بالكامل
               time.sleep(15)
-              
-              print('App successfully pinged and kept alive!')
               browser.close()
           "
