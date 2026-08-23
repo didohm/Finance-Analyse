@@ -1,8 +1,9 @@
-streamlit
-pandas
-numpy
-requests
-plotly
-yfinance
-openpyxl
-matplotlib
+streamlit>=1.55
+pandas>=2.2
+numpy>=1.26
+requests>=2.32
+plotly>=5.22
+yfinance>=0.2.54
+openpyxl>=3.1
+# required internally by pandas Styler.background_gradient (table heat colors)
+matplotlib>=3.8

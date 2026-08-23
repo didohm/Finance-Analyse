@@ -1,197 +1,209 @@
-# app.py
-import os
+"""FinScope — Financial Opportunity Analyzer.
+
+Real-time market analysis dashboard: technical scoring, signals,
+risk/return analytics, correlations, news and exports.
+"""
+from __future__ import annotations
+
+import html
+from datetime import datetime
 from io import BytesIO
-from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import requests
 import streamlit as st
-import streamlit.components.v1 as components
-import yfinance as yf
+from plotly.subplots import make_subplots
 
+import analysis as an
+from data import (
+    MAX_ASSETS,
+    PERIODS,
+    fetch_universe,
+    get_secret,
+    is_crypto,
+    massive_news,
+    parse_tickers,
+)
 
-# =========================
-# CONFIG
-# =========================
 st.set_page_config(
-    page_title="FinTech Opportunities Analyzer",
+    page_title="FinScope — Financial Opportunity Analyzer",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Inject Voiceflow Chatbot Widget
-components.html(
-    """
-    <script type="text/javascript">
-      if (!window.parent.document.getElementById('voiceflow-widget-script')) {
-          const script = window.parent.document.createElement('script');
-          script.id = 'voiceflow-widget-script';
-          script.src = "https://cdn.voiceflow.com/widget-next/bundle.mjs";
-          script.type = "text/javascript";
-          script.onload = function() {
-            window.parent.voiceflow.chat.load({
-              verify: { projectID: '69f628ab952c4d555315ba3a' },
-              url: 'https://general-runtime.voiceflow.com',
-              versionID: 'production',
-              voice: {
-                url: "https://runtime-api.voiceflow.com"
-              }
-            });
-          };
-          window.parent.document.head.appendChild(script);
-      }
-    </script>
-    """,
-    height=0,
-    width=0,
-)
-
-MASSIVE_BASE_URL = os.getenv("MASSIVE_BASE_URL", "https://api.massive.com").rstrip("/")
-
-def _get_secret(name: str, default: str = "") -> str:
-    try:
-        if name in st.secrets:
-            return str(st.secrets[name]).strip()
-    except Exception:
-        pass
-    return os.getenv(name, default).strip()
-
-MASSIVE_API_KEY = _get_secret("MASSIVE_API_KEY")
-
+MASSIVE_API_KEY = get_secret("MASSIVE_API_KEY")
+DEFAULT_TICKERS = "AAPL, MSFT, GOOGL, AMZN, BTC-USD, ETH-USD"
 
 # =========================
-# UI STYLE
+# STYLES
 # =========================
 st.markdown(
     """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
-html, body, [class*="css"]  {
-    font-family: 'Inter', sans-serif;
+:root {
+  --ink: #0f172a;
+  --muted: #475569;
+  --faint: #64748b;
+  --surface: #ffffff;
+  --surface-tint: #f8fafc;
+  --border: #e2e8f0;
+  --accent: #4f46e5;
 }
 
-.stApp {
-    background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+html, body, [class*="css"], .stApp {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
+.stApp { background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%); }
 
-.block-container {
-    padding-top: 1rem;
-    padding-bottom: 2rem;
-    animation: fadeIn 0.6s ease-out;
+.block-container { padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1400px; }
+
+h1, h2, h3 { letter-spacing: -0.02em; }
+
+/* Accessible section headings */
+.main h2 {
+    font-size: 1.35rem;
+    font-weight: 800;
+    color: var(--ink);
+    margin: 1.6rem 0 -0.4rem 0;
+    padding-bottom: 0.45rem;
+    border-bottom: 2px solid var(--border);
 }
+.main h3 { font-size: 1.05rem; font-weight: 700; color: var(--ink); }
 
 .hero {
     background: linear-gradient(135deg, #0f172a 0%, #312e81 55%, #4f46e5 100%);
-    color: white;
-    padding: 2rem;
-    border-radius: 24px;
-    box-shadow: 0 20px 50px rgba(15, 23, 42, 0.18);
-    margin-bottom: 1.2rem;
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    color: #fff;
+    padding: 1.75rem 2rem;
+    border-radius: 20px;
+    box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
+    margin-bottom: 1.25rem;
 }
-
-.hero:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 25px 60px rgba(15, 23, 42, 0.25);
-}
-
-.hero h1 {
-    margin: 0;
-    font-size: 2.15rem;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-}
-
-.hero p {
-    margin: 0.5rem 0 0 0;
-    opacity: 0.9;
+.hero h1 { margin: 0; font-size: clamp(1.5rem, 3.2vw, 2.15rem); font-weight: 800; }
+.hero p { margin: 0.45rem 0 0; opacity: 0.88; font-size: 0.98rem; }
+.hero .chips { margin-top: 0.9rem; display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.chip {
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: 999px;
+    padding: 0.22rem 0.75rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    backdrop-filter: blur(4px);
 }
 
 .card {
-    background: white;
-    border: 1px solid #e2e8f0;
-    border-radius: 22px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 18px;
     padding: 1.15rem;
-    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.05);
-    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-    animation: fadeIn 0.5s ease-out backwards;
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+    transition: transform .25s ease, box-shadow .25s ease, border-color .25s ease;
+    height: 100%;
 }
-
-.card:nth-child(1) { animation-delay: 0.1s; }
-.card:nth-child(2) { animation-delay: 0.2s; }
-.card:nth-child(3) { animation-delay: 0.3s; }
-
 .card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 15px 35px rgba(15, 23, 42, 0.1);
+    transform: translateY(-3px);
+    box-shadow: 0 14px 32px rgba(15, 23, 42, 0.10);
     border-color: #cbd5e1;
 }
-
-div[data-testid="stButton"] > button {
-    transition: all 0.2s ease-in-out;
-}
-div[data-testid="stButton"] > button:hover {
-    transform: scale(1.02);
-}
-div[data-testid="stButton"] > button:active {
-    transform: scale(0.98);
-}
-
-.small-badge {
+.rank-badge {
     display: inline-block;
-    padding: 0.3rem 0.8rem;
+    padding: 0.26rem 0.7rem;
     border-radius: 999px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    border: 1px solid #e2e8f0;
-    background: #f8fafc;
-    color: #334155;
-    margin-bottom: 0.75rem;
+    font-size: 0.76rem;
+    font-weight: 700;
+    border: 1px solid var(--border);
+    background: var(--surface-tint);
+    color: var(--muted);
+    margin-bottom: 0.65rem;
 }
-
-.metric-title {
-    font-size: 0.8rem;
+.metric-label {
+    font-size: 0.78rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: #64748b;
+    color: var(--faint);
     font-weight: 700;
 }
+.metric-price { font-size: 1.6rem; font-weight: 800; color: var(--ink); margin-top: 0.1rem; }
+.metric-line { color: var(--muted); font-size: 0.88rem; margin-top: 0.28rem; }
 
-.metric-value {
-    font-size: 1.55rem;
-    font-weight: 800;
-    color: #0f172a;
-    margin-top: 0.15rem;
+.pill {
+    display: inline-block;
+    padding: 0.18rem 0.62rem;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0.02em;
 }
 
-.metric-sub {
-    color: #64748b;
-    font-size: 0.9rem;
+.up { color: #059669; font-weight: 700; }
+.down { color: #dc2626; font-weight: 700; }
+
+.ticker-chip {
+    display: inline-block;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    color: #3730a3;
+    border-radius: 999px;
+    padding: 0.12rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    margin: 0.12rem 0.18rem 0.12rem 0;
 }
 
-.section-title {
-    font-size: 1.25rem;
-    font-weight: 800;
-    color: #0f172a;
-    margin: 1.3rem 0 0.8rem 0;
+.news-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 0.95rem 1.1rem;
+    margin-bottom: 0.7rem;
+    transition: border-color .2s ease, box-shadow .2s ease;
 }
+.news-card:hover { border-color: #c7d2fe; box-shadow: 0 8px 20px rgba(15,23,42,.06); }
+.news-card a { color: var(--ink); text-decoration: none; font-weight: 700; font-size: 1rem; }
+.news-card a:hover { color: var(--accent); text-decoration: underline; }
+.news-meta { color: var(--faint); font-size: 0.84rem; margin-top: 0.25rem; }
 
 .footer {
-    margin-top: 2rem;
-    padding-top: 1rem;
-    border-top: 1px solid #e2e8f0;
-    color: #64748b;
-    font-size: 0.9rem;
+    margin-top: 2.5rem;
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--border);
+    color: var(--faint);
+    font-size: 0.86rem;
+}
+
+/* Interaction & accessibility */
+div[data-testid="stButton"] > button:focus-visible,
+div[data-testid="stDownloadButton"] > button:focus-visible,
+a:focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+div[data-testid="stMetric"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 0.9rem 1.05rem;
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+@media (max-width: 640px) {
+    .hero { padding: 1.25rem 1.35rem; border-radius: 16px; }
+    .block-container { padding-left: 1rem; padding-right: 1rem; }
 }
 </style>
 """,
@@ -202,764 +214,627 @@ div[data-testid="stButton"] > button:active {
 # =========================
 # HELPERS
 # =========================
-def parse_tickers(text: str) -> list[str]:
-    tickers = [t.strip().upper() for t in text.split(",")]
-    tickers = [t for t in tickers if t]
-    seen, out = set(), []
-    for t in tickers:
-        if t not in seen:
-            out.append(t)
-            seen.add(t)
-    return out
+SOURCE_LABELS = {"massive": "Massive", "yahoo": "Yahoo Finance",
+                 "historical_close": "last close"}
 
 
-def is_crypto_ticker(ticker: str) -> bool:
-    # Example: BTC-USD, ETH-USD
-    return "-" in ticker and ticker.endswith("-USD")
+def fmt_price(value: float) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    magnitude = abs(value)
+    if magnitude >= 1:
+        return f"${value:,.2f}"
+    if magnitude >= 0.01:
+        return f"${value:.4f}"
+    return f"${value:.6f}"
 
 
-def split_crypto_ticker(ticker: str) -> tuple[str, str]:
-    base, quote = ticker.split("-", 1)
-    return base, quote
+def pct_html(value: float) -> str:
+    if value is None or pd.isna(value):
+        return '<span class="metric-line">n/a</span>'
+    cls = "up" if value >= 0 else "down"
+    arrow = "▲" if value >= 0 else "▼"
+    return f'<span class="{cls}">{arrow} {value:+.2f}%</span>'
 
 
-def strip_tz_index(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-    out = df.copy()
-    try:
-        if isinstance(out.index, pd.DatetimeIndex):
-            if out.index.tz is not None:
-                out.index = out.index.tz_convert(None)
-    except Exception:
-        pass
-    return out
+def signal_pill(signal: str) -> str:
+    color = an.SIGNAL_COLORS.get(signal, "#64748b")
+    return f'<span class="pill" style="background:{color};">{html.escape(signal)}</span>'
 
 
-def request_massive(path: str, params: dict | None = None) -> dict | None:
-    if not MASSIVE_API_KEY:
-        return None
-
-    url = f"{MASSIVE_BASE_URL}{path}"
-    final_params = dict(params or {})
-    final_params["apiKey"] = MASSIVE_API_KEY
-
-    try:
-        r = requests.get(url, params=final_params, timeout=30)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
-
-
-def massive_stock_history(symbol: str, start: str, end: str, multiplier: int = 1, timespan: str = "day") -> pd.DataFrame:
-    data = request_massive(
-        f"/v2/aggs/ticker/{symbol}/range/{multiplier}/{timespan}/{start}/{end}",
-        params={"adjusted": "true", "sort": "asc", "limit": "50000"},
+def ticker_chips(tickers: list[str]) -> str:
+    return "".join(
+        f'<span class="ticker-chip">{html.escape(t)}</span>' for t in tickers
     )
-    if not data:
-        return pd.DataFrame()
-
-    results = data.get("results", [])
-    if not results:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(results)
-    if "t" not in df.columns or "c" not in df.columns:
-        return pd.DataFrame()
-
-    df["Date"] = pd.to_datetime(df["t"], unit="ms", utc=True).dt.tz_convert(None)
-    df = df.set_index("Date").sort_index()
-    cols_map = {"o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"}
-    keep = [c for c in cols_map if c in df.columns]
-    df = df[keep].rename(columns=cols_map)
-    return df
 
 
-def massive_stock_live(symbol: str) -> tuple[float | None, str]:
-    data = request_massive(f"/v2/last/trade/{symbol}")
-    if not data:
-        return None, "no_api"
-
-    res = data.get("results", {})
-    price = res.get("p")
-    if price is not None:
-        return float(price), "massive"
-
-    return None, "no_price"
+def empty_chart(message: str):
+    st.info(message)
 
 
-def massive_crypto_live(symbol: str) -> tuple[float | None, str]:
-    base, quote = split_crypto_ticker(symbol)
-    data = request_massive(f"/v1/last/crypto/{base}/{quote}")
-    if not data:
-        return None, "no_api"
-
-    last = data.get("last", {})
-    price = last.get("price")
-    if price is not None:
-        return float(price), "massive"
-
-    return None, "no_price"
+def preset_button(label: str, tickers_str: str):
+    st.button(label, on_click=lambda: st.session_state.update(tickers_input=tickers_str),
+              width="stretch")
 
 
-@st.cache_data(ttl=300)
-def yf_history(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
-    raw = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
-    if raw is None or raw.empty:
-        return pd.DataFrame()
+# =========================
+# SIDEBAR
+# =========================
+if "tickers_input" not in st.session_state:
+    st.session_state.tickers_input = DEFAULT_TICKERS
+if "period" not in st.session_state:
+    st.session_state.period = "1Y"
 
-    if isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = raw.columns.get_level_values(0)
+with st.sidebar:
+    st.markdown(
+        """
+        <div style="margin-bottom:1rem;">
+          <div style="font-size:1.25rem;font-weight:800;color:#0f172a;">📊 FinScope</div>
+          <div style="font-size:0.85rem;color:#64748b;">Financial Opportunity Analyzer</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    raw = strip_tz_index(raw)
-    cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in raw.columns]
-    if not cols:
-        return pd.DataFrame()
-    return raw[cols].copy()
+    tickers_input = st.text_area(
+        "Tickers",
+        key="tickers_input",
+        help=f"Comma-separated symbols, up to {MAX_ASSETS}. Crypto uses the form BTC-USD.",
+        height=96,
+        placeholder="AAPL, MSFT, BTC-USD",
+    )
 
+    valid_tickers, invalid_tickers = parse_tickers(tickers_input or "")
 
-def period_to_days(period: str) -> int:
-    if period == "1d":
-        return 1
-    elif period == "5d":
-        return 5
-    elif period == "1mo":
-        return 30
-    elif period == "6mo":
-        return 180
-    elif period == "1y":
-        return 365
-    elif period == "5y":
-        return 365 * 5
-    return 365
-
-
-def fetch_history(symbol: str, is_crypto: bool, period: str = "1y") -> pd.DataFrame:
-    end = datetime.now(timezone.utc).date()
-    start = (end - timedelta(days=period_to_days(period))).isoformat()
-    end_str = end.isoformat()
-
-    if not is_crypto:
-        df = massive_stock_history(symbol, start, end_str)
-        if not df.empty:
-            return df
-
-    # fallback / crypto path
-    if is_crypto:
-        df = yf_history(symbol, period=period, interval="1d" if period != "1d" else "15m")
-        if not df.empty:
-            return df
-
-    # final fallback for stock too
-    df = yf_history(symbol, period=period, interval="1d" if period != "1d" else "15m")
-    return df
-
-
-def fetch_live_price(symbol: str, is_crypto: bool) -> tuple[float | None, str]:
-    if is_crypto:
-        price, src = massive_crypto_live(symbol)
-        if price is not None:
-            return price, src
+    if valid_tickers:
+        st.markdown(ticker_chips(valid_tickers), unsafe_allow_html=True)
+        st.caption(f"{len(valid_tickers)} of max {MAX_ASSETS} assets selected")
     else:
-        price, src = massive_stock_live(symbol)
-        if price is not None:
-            return price, src
+        st.caption("Enter at least one ticker to begin.")
 
-    # fallback to yfinance
-    try:
-        t = yf.Ticker(symbol)
-        fast = getattr(t, "fast_info", None)
-        if fast:
-            last = fast.get("lastPrice") or fast.get("regularMarketPrice")
-            if last is not None:
-                return float(last), "yfinance_fast_info"
-
-        hist = t.history(period="5d", interval="1d")
-        if hist is not None and not hist.empty and "Close" in hist.columns:
-            return float(hist["Close"].dropna().iloc[-1]), "yfinance_history"
-    except Exception:
-        pass
-
-    return None, "unavailable"
-
-
-def fetch_news(symbol: str) -> list[dict]:
-    # Stocks news endpoint
-    data = request_massive("/v2/reference/news", params={"ticker": symbol, "limit": 5, "order": "desc"})
-    if not data:
-        return []
-    results = data.get("results", [])
-    if isinstance(results, list):
-        return results
-    return []
-
-
-def rsi(series: pd.Series, window: int = 14) -> pd.Series:
-    delta = series.diff()
-    gain = delta.clip(lower=0).rolling(window=window).mean()
-    loss = (-delta.clip(upper=0)).rolling(window=window).mean()
-    rs = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
-
-
-def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    line = ema_fast - ema_slow
-    sig = line.ewm(span=signal, adjust=False).mean()
-    hist = line - sig
-    return line, sig, hist
-
-
-def bollinger(series: pd.Series, window: int = 20, num_std: float = 2.0):
-    mid = series.rolling(window).mean()
-    std = series.rolling(window).std()
-    upper = mid + num_std * std
-    lower = mid - num_std * std
-    return mid, upper, lower
-
-
-def max_drawdown(series: pd.Series) -> float:
-    roll_max = series.cummax()
-    dd = (series / roll_max) - 1
-    return float(dd.min())
-
-
-def classify_signal(rsi_v, trend, macd_hist_v, price_vs_bb):
-    if pd.isna(rsi_v) or pd.isna(macd_hist_v):
-        return "WAIT"
-
-    if rsi_v < 30 and trend == "Bullish" and macd_hist_v > 0 and price_vs_bb != "above":
-        return "STRONG BUY"
-    if rsi_v < 40 and trend == "Bullish":
-        return "BUY"
-    if rsi_v > 70 and (trend == "Bearish" or macd_hist_v < 0):
-        return "SELL"
-    if rsi_v > 65 and price_vs_bb == "above":
-        return "REDUCE"
-    return "HOLD"
-
-
-def build_asset_table(history_map: dict[str, pd.DataFrame], live_map: dict[str, dict]) -> pd.DataFrame:
-    closes = {}
-    for symbol, df in history_map.items():
-        if df is None or df.empty or "Close" not in df.columns:
-            continue
-        s = df["Close"].copy()
-        s.index = pd.to_datetime(s.index)
-        closes[symbol] = s
-
-    close_df = pd.concat(closes, axis=1).sort_index().ffill().bfill()
-    if close_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    live_rows = []
-    for symbol in close_df.columns:
-        last_close = float(close_df[symbol].dropna().iloc[-1])
-        prev_close = float(close_df[symbol].dropna().iloc[-2]) if close_df[symbol].dropna().shape[0] > 1 else last_close
-
-        live_price = live_map.get(symbol, {}).get("price")
-        src = live_map.get(symbol, {}).get("source", "unknown")
-        if live_price is None:
-            live_price = last_close
-            src = "historical_close"
-
-        live_rows.append(
-            {
-                "Asset": symbol,
-                "Live_Price": float(live_price),
-                "Source": src,
-                "Historical_Last": last_close,
-                "Previous_Close": prev_close,
-            }
+    if invalid_tickers:
+        st.caption(
+            "⚠️ Ignored invalid entries: " + ", ".join(map(html.escape, invalid_tickers))
         )
 
-    df = pd.DataFrame(live_rows).set_index("Asset")
+    st.markdown("**Quick presets**")
+    p1, p2 = st.columns(2)
+    with p1:
+        preset_button("Tech", "AAPL, MSFT, GOOGL, AMZN, META")
+        preset_button("Crypto", "BTC-USD, ETH-USD, SOL-USD, ADA-USD")
+    with p2:
+        preset_button("EV / Auto", "TSLA, RIVN, LCID, F, GM")
+        preset_button("Finance", "JPM, V, MA, BAC, GS")
 
-    df["Variation_24h_%"] = ((df["Live_Price"] - df["Previous_Close"]) / df["Previous_Close"]) * 100
-    df["Return_Annualized"] = close_df.pct_change().mean() * 252
-    df["Volatility_Annualized"] = close_df.pct_change().std() * np.sqrt(252)
-
-    sma20 = close_df.rolling(20).mean().iloc[-1]
-    sma50 = close_df.rolling(50).mean().iloc[-1]
-    rsi14 = close_df.apply(rsi).iloc[-1]
-
-    macd_line = {}
-    macd_sig = {}
-    macd_hist = {}
-    bb_mid = {}
-    bb_up = {}
-    bb_low = {}
-
-    for symbol in close_df.columns:
-        ml, ms, mh = macd(close_df[symbol])
-        mid, up, low = bollinger(close_df[symbol])
-        macd_line[symbol] = ml.iloc[-1]
-        macd_sig[symbol] = ms.iloc[-1]
-        macd_hist[symbol] = mh.iloc[-1]
-        bb_mid[symbol] = mid.iloc[-1]
-        bb_up[symbol] = up.iloc[-1]
-        bb_low[symbol] = low.iloc[-1]
-
-    df["SMA20"] = sma20
-    df["SMA50"] = sma50
-    df["RSI14"] = rsi14
-    df["MACD"] = pd.Series(macd_line)
-    df["MACD_Signal"] = pd.Series(macd_sig)
-    df["MACD_Hist"] = pd.Series(macd_hist)
-    df["BB_Mid"] = pd.Series(bb_mid)
-    df["BB_Upper"] = pd.Series(bb_up)
-    df["BB_Lower"] = pd.Series(bb_low)
-
-    df["Trend"] = np.where(df["SMA20"] > df["SMA50"], "Bullish", "Bearish")
-    df["Momentum"] = df["SMA20"] / df["SMA50"]
-
-    def bb_state(row):
-        price = row["Live_Price"]
-        if pd.isna(price) or pd.isna(row["BB_Upper"]) or pd.isna(row["BB_Lower"]):
-            return "inside"
-        if price > row["BB_Upper"]:
-            return "above"
-        if price < row["BB_Lower"]:
-            return "below"
-        return "inside"
-
-    df["BB_State"] = df.apply(bb_state, axis=1)
-
-    ret_rank = df["Return_Annualized"].rank(pct=True)
-    risk_rank = 1 - df["Volatility_Annualized"].rank(pct=True)
-    momentum_rank = df["Momentum"].rank(pct=True)
-
-    rsi_quality = 1 - (df["RSI14"] - 50).abs() / 50
-    rsi_quality = rsi_quality.clip(lower=0, upper=1)
-    macd_rank = df["MACD_Hist"].rank(pct=True)
-
-    df["Pro_Score"] = 100 * (
-        0.28 * ret_rank.fillna(0.5)
-        + 0.22 * risk_rank.fillna(0.5)
-        + 0.18 * momentum_rank.fillna(0.5)
-        + 0.16 * rsi_quality.fillna(0.5)
-        + 0.16 * macd_rank.fillna(0.5)
+    period = st.select_slider(
+        "Analysis period",
+        options=list(PERIODS.keys()),
+        key="period",
+        help="Daily bars over this lookback window feed every indicator.",
     )
 
-    df["Signal"] = df.apply(
-        lambda row: classify_signal(row["RSI14"], row["Trend"], row["MACD_Hist"], row["BB_State"]),
-        axis=1,
-    )
+    refresh_btn = st.button("🔄 Refresh live prices", width="stretch")
+    if refresh_btn:
+        st.cache_data.clear()
+        st.rerun()
 
-    df["Confidence"] = pd.cut(
-        df["Pro_Score"],
-        bins=[-1, 40, 60, 75, 101],
-        labels=["Low", "Medium", "High", "Very High"],
-    )
-
-    positive = df["Pro_Score"].clip(lower=0)
-    df["Suggested_Weight_%"] = 100 * positive / positive.sum() if positive.sum() > 0 else 100 / len(df)
-
-    df["Max_Drawdown_1Y_%"] = [
-        max_drawdown(close_df[c]) * 100 if c in close_df.columns else np.nan
-        for c in df.index
-    ]
-
-    df = df.sort_values("Pro_Score", ascending=False).copy()
-    df.insert(0, "Rank", range(1, len(df) + 1))
-
-    return df, close_df
-
-
-def to_excel(analysis_df: pd.DataFrame, close_df: pd.DataFrame) -> bytes:
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        analysis_df.reset_index().to_excel(writer, sheet_name="Opportunities", index=False)
-        close_df.to_excel(writer, sheet_name="Historical_Close")
-    return buffer.getvalue()
+    st.divider()
+    if MASSIVE_API_KEY:
+        st.caption("🟢 **Massive API** connected — institutional-grade data.")
+    else:
+        st.caption(
+            "🟡 Using **Yahoo Finance** data. Set the `MASSIVE_API_KEY` "
+            "secret for lower-latency market data."
+        )
+    st.caption("Prices are cached briefly (≈45 s) to stay fast and respect rate limits.")
 
 
 # =========================
-# HEADER
+# HERO
 # =========================
 st.markdown(
-    """
+    f"""
 <div class="hero">
-  <h1>Analyse & Détection d’Opportunités Financières</h1>
-  <p>Real-time data • Scoring • Signals • Charts • Excel export</p>
+  <h1>Financial Opportunity Analyzer</h1>
+  <p>Real-time prices • Technical scoring • Buy/sell signals • Risk analytics • News</p>
+  <div class="chips">
+    <span class="chip">📈 Period: {period}</span>
+    <span class="chip">🗂️ Assets: {len(valid_tickers)}</span>
+    <span class="chip">{'🟢 Massive API' if MASSIVE_API_KEY else '🟡 Yahoo Finance'}</span>
+    <span class="chip">🕒 {datetime.now().strftime('%d %b %Y %H:%M')}</span>
+  </div>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
-if "tickers_input" not in st.session_state:
-    st.session_state.tickers_input = "AAPL, TSLA, MSFT, BTC-USD, ETH-USD"
+if not valid_tickers:
+    st.info("👈 Enter some tickers in the sidebar (or pick a preset) to start analyzing.")
+    st.stop()
 
-def set_tickers(tickers_str):
-    st.session_state.tickers_input = tickers_str
 
 # =========================
-# SIDEBAR
+# FETCH + ANALYZE
 # =========================
-with st.sidebar:
-    st.markdown("### ⚙️ Paramètres")
+with st.spinner("Fetching market data…"):
+    history_map, live_map, issues = fetch_universe(valid_tickers, period, MASSIVE_API_KEY)
 
-    tickers_input = st.text_area(
-        "Tickers",
-        key="tickers_input",
-        help="Sépare les tickers par des virgules",
-        height=90,
+failed = [t for t in valid_tickers if t not in history_map]
+if failed:
+    reasons = "; ".join(f"{t}: {issues.get(t, 'unavailable')}" for t in failed)
+    st.warning(f"Could not fully load: {reasons}")
+
+if not history_map:
+    st.error(
+        "No market data could be loaded for the selected tickers. "
+        "Check your connection or try different symbols."
     )
+    if st.button("Retry", type="primary"):
+        st.cache_data.clear()
+        st.rerun()
+    st.stop()
 
-    st.markdown("<p style='font-size: 0.85rem; color: #64748b; margin-bottom: 0.5rem;'>💡 Suggestions:</p>", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.button("Tech", on_click=set_tickers, args=("AAPL, MSFT, GOOGL, AMZN, META",), use_container_width=True)
-        st.button("Crypto", on_click=set_tickers, args=("BTC-USD, ETH-USD, SOL-USD, ADA-USD",), use_container_width=True)
-    with c2:
-        st.button("EV/Auto", on_click=set_tickers, args=("TSLA, RIVN, LCID, F, GM",), use_container_width=True)
-        st.button("Finance", on_click=set_tickers, args=("JPM, V, MA, BAC, GS",), use_container_width=True)
+metrics_df, closes_df = an.analyze(history_map, live_map)
+if metrics_df.empty:
+    st.error("Not enough historical data to compute the analysis. Try a longer period.")
+    st.stop()
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    period = st.selectbox("Chart period", ["1d", "5d", "1mo", "6mo", "1y", "5y"], index=2)
-    use_massive = st.toggle("Use Real Data", value=True)
-    run_btn = st.button("🚀 Launch Analysis", use_container_width=True, type="primary")
 
 # =========================
-# MAIN
+# TOP OPPORTUNITIES
 # =========================
-if run_btn:
-    tickers = parse_tickers(tickers_input)
+st.markdown("## 🏆 Top opportunities")
+top3 = metrics_df.head(3)
+card_cols = st.columns(len(top3))
+medals = ["🥇", "🥈", "🥉"]
 
-    if not tickers:
-        st.error("دخل على الأقل ticker واحد صحيح.")
-        st.stop()
-
-    history_map = {}
-    live_map = {}
-
-    with st.spinner("Fetching data..."):
-        for t in tickers:
-            crypto = is_crypto_ticker(t)
-
-            # Historical data
-            if use_massive and not crypto:
-                hist = fetch_history(t, is_crypto=False, period=period)
-            else:
-                hist = fetch_history(t, is_crypto=crypto, period=period)
-
-            if hist is None or hist.empty:
-                st.warning(f"No historical data for {t}")
-                continue
-
-            history_map[t] = hist
-
-            # Live data
-            price, src = (None, "disabled")
-            if use_massive:
-                price, src = fetch_live_price(t, is_crypto=crypto)
-            if price is None:
-                price, src = fetch_live_price(t, is_crypto=crypto)
-
-            live_map[t] = {"price": price, "source": src}
-
-    if not history_map:
-        st.error("Aucune donnée récupérée.")
-        st.stop()
-
-    analysis_df, close_df = build_asset_table(history_map, live_map)
-
-    if analysis_df.empty:
-        st.error("Impossible de construire l’analyse.")
-        st.stop()
-
-    st.success("Analysis completed successfully.")
-
-    # =========================
-    # TOP 3
-    # =========================
-    st.markdown('<div class="section-title">Top opportunities</div>', unsafe_allow_html=True)
-    top3 = analysis_df.head(3)
-    cols = st.columns(3)
-    medals = ["🥇", "🥈", "🥉"]
-
-    for i, (_, row) in enumerate(top3.iterrows()):
-        with cols[i]:
-            st.markdown(
-                f"""
+for i, (_, row) in enumerate(top3.iterrows()):
+    with card_cols[i]:
+        st.markdown(
+            f"""
 <div class="card">
-  <div class="small-badge">{medals[i]} Rank #{int(row["Rank"])}</div>
-  <div class="metric-title">{row.name}</div>
-  <div class="metric-value">${row["Live_Price"]:,.2f}</div>
-  <div class="metric-sub">24h: <b>{row["Variation_24h_%"]:+.2f}%</b></div>
-  <div class="metric-sub">RSI(14): <b>{row["RSI14"]:.1f}</b> • Trend: <b>{row["Trend"]}</b></div>
-  <div class="metric-sub">Signal: <b>{row["Signal"]}</b> • Score: <b>{row["Pro_Score"]:.1f}</b></div>
+  <span class="rank-badge">{medals[i]} Rank #{int(row['Rank'])}</span>
+  <div class="metric-label">{html.escape(str(row.name))}</div>
+  <div class="metric-price">{fmt_price(row['Live_Price'])}</div>
+  <div class="metric-line">vs prev close {pct_html(row['Variation_24h_%'])}</div>
+  <div class="metric-line">RSI(14): <b>{row['RSI14']:.1f}</b> · Trend: <b>{row['Trend']}</b></div>
+  <div class="metric-line">Score: <b>{row['Pro_Score']:.1f}/100</b></div>
+  <div style="margin-top:0.55rem;">{signal_pill(row['Signal'])}</div>
 </div>
 """,
-                unsafe_allow_html=True,
-            )
+            unsafe_allow_html=True,
+        )
 
-    # =========================
-    # SUMMARY METRICS
-    # =========================
-    st.markdown('<div class="section-title">Summary</div>', unsafe_allow_html=True)
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric("Assets analyzed", len(analysis_df))
-    with m2:
-        best = analysis_df.iloc[0]
-        st.metric("Best asset", best.name, f'{best["Pro_Score"]:.1f} score')
-    with m3:
-        st.metric("Average annual return", f'{analysis_df["Return_Annualized"].mean() * 100:.1f}%')
-    with m4:
-        st.metric("Average annual risk", f'{analysis_df["Volatility_Annualized"].mean() * 100:.1f}%')
 
-    # =========================
-    # TABLE
-    # =========================
-    st.markdown('<div class="section-title">Detailed comparison table</div>', unsafe_allow_html=True)
+# =========================
+# SUMMARY METRICS
+# =========================
+st.markdown("## 📌 Summary")
+best = metrics_df.iloc[0]
+worst_risk_idx = metrics_df["Volatility_Annualized"].idxmax()
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Assets analyzed", len(metrics_df),
+          help="Number of assets successfully loaded and scored.")
+k2.metric("Top score", f"{best.name}",
+          f"{best['Pro_Score']:.1f} / 100",
+          help="Highest composite score in the current selection.")
+avg_ret = metrics_df["Return_Annualized"].mean() * 100
+k3.metric("Avg annualized return", f"{avg_ret:.1f}%",
+          help="Mean annualized return across the selection.")
+avg_vol = metrics_df["Volatility_Annualized"].mean() * 100
+k4.metric("Avg annualized risk", f"{avg_vol:.1f}%",
+          help=f"Highest-risk asset: {worst_risk_idx}.")
 
-    display_df = analysis_df[
-        [
-            "Rank",
-            "Live_Price",
-            "Source",
-            "Variation_24h_%",
-            "RSI14",
-            "Trend",
-            "MACD_Hist",
-            "Return_Annualized",
-            "Volatility_Annualized",
-            "Pro_Score",
-            "Signal",
-            "Confidence",
-            "Suggested_Weight_%",
-            "Max_Drawdown_1Y_%",
-        ]
-    ].reset_index()
 
-    display_df.columns = [
-        "Asset",
-        "Rank",
-        "Price",
-        "Source",
-        "24h %",
-        "RSI(14)",
-        "Trend",
-        "MACD Hist",
-        "Annual Return",
-        "Annual Risk",
-        "Score",
-        "Signal",
-        "Confidence",
-        "Suggested Weight %",
-        "1Y Max Drawdown %",
+# =========================
+# COMPARISON TABLE
+# =========================
+st.markdown("## 📋 Detailed comparison")
+
+display_df = metrics_df[
+    [
+        "Rank", "Live_Price", "Source", "Variation_24h_%", "RSI14", "Trend",
+        "MACD_Hist", "Return_Annualized", "Volatility_Annualized",
+        "Pro_Score", "Signal", "Confidence", "Suggested_Weight_%", "Max_Drawdown_%",
     ]
+].reset_index()
 
-    def color_signals(val):
-        if val == "STRONG BUY":
-            return "background-color: #059669; color: white; font-weight: bold;"
-        elif val == "BUY":
-            return "background-color: #10b981; color: white;"
-        elif val == "SELL":
-            return "background-color: #ef4444; color: white; font-weight: bold;"
-        elif val == "REDUCE":
-            return "background-color: #f59e0b; color: white;"
-        elif val == "WAIT":
-            return "background-color: #64748b; color: white;"
-        return "background-color: #3b82f6; color: white;"
+display_df.columns = [
+    "Asset", "Rank", "Price", "Source", "Δ vs Prev Close %", "RSI(14)", "Trend",
+    "MACD Hist", "Annual Return", "Annual Risk", "Score", "Signal",
+    "Confidence", "Suggested Weight %", "Max Drawdown %",
+]
 
-    styled = (
-        display_df.style.format(
-            {
-                "Price": "{:.2f}",
-                "24h %": "{:+.2f}%",
-                "RSI(14)": "{:.1f}",
-                "MACD Hist": "{:.4f}",
-                "Annual Return": "{:+.2%}",
-                "Annual Risk": "{:.2%}",
-                "Score": "{:.1f}",
-                "Suggested Weight %": "{:.1f}%",
-                "1Y Max Drawdown %": "{:.2f}%",
-            }
-        )
-        .background_gradient(subset=["Score"], cmap="YlGn")
-        .background_gradient(subset=["Annual Return"], cmap="RdYlGn")
-        .background_gradient(subset=["Annual Risk"], cmap="YlOrRd")
-        .map(color_signals, subset=["Signal"])
-        .set_properties(**{"text-align": "center"})
-    )
-    st.dataframe(styled, use_container_width=True, hide_index=True)
 
-    # =========================
-    # RISK/RETURN SCATTER
-    # =========================
-    st.markdown('<div class="section-title">Risk / Return matrix</div>', unsafe_allow_html=True)
+def color_signal(val: str) -> str:
+    bg = an.SIGNAL_COLORS.get(val, "#64748b")
+    weight = "bold" if val in {"STRONG BUY", "SELL"} else "normal"
+    return f"background-color:{bg};color:white;font-weight:{weight};"
 
-    scatter_df = analysis_df.reset_index().copy()
-    scatter_df["Return_%"] = scatter_df["Return_Annualized"] * 100
-    scatter_df["Risk_%"] = scatter_df["Volatility_Annualized"] * 100
-    scatter_df["Size"] = scatter_df["Pro_Score"].clip(lower=1)
 
-    fig_scatter = px.scatter(
-        scatter_df,
-        x="Risk_%",
-        y="Return_%",
-        color="Pro_Score",
-        size="Size",
-        hover_name="Asset",
-        hover_data={
-            "Risk_%": ":.2f",
-            "Return_%": ":.2f",
-            "Pro_Score": ":.1f",
-            "Signal": True,
-            "Size": False,
+styled = (
+    display_df.style.format(
+        {
+            "Price": lambda v: f"{v:,.2f}",
+            "Δ vs Prev Close %": lambda v: "—" if pd.isna(v) else f"{v:+.2f}%",
+            "RSI(14)": lambda v: "—" if pd.isna(v) else f"{v:.1f}",
+            "MACD Hist": lambda v: "—" if pd.isna(v) else f"{v:.4f}",
+            "Annual Return": lambda v: "—" if pd.isna(v) else f"{v:+.1%}",
+            "Annual Risk": lambda v: "—" if pd.isna(v) else f"{v:.1%}",
+            "Score": lambda v: f"{v:.1f}",
+            "Suggested Weight %": lambda v: f"{v:.1f}%",
+            "Max Drawdown %": lambda v: "—" if pd.isna(v) else f"{v:.1f}%",
         },
-        color_continuous_scale="Viridis",
-        size_max=36,
+        na_rep="—",
     )
-    fig_scatter.update_layout(
-        height=520,
-        template="plotly_white",
-        xaxis_title="Risk (Annualized Volatility %)",
-        yaxis_title="Return (Annualized %)",
-        margin=dict(l=20, r=20, t=20, b=20),
-    )
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    .background_gradient(subset=["Score"], cmap="YlGn", vmin=0, vmax=100)
+    .background_gradient(subset=["Annual Return"], cmap="RdYlGn")
+    .background_gradient(subset=["Annual Risk"], cmap="YlOrRd")
+    .map(color_signal, subset=["Signal"])
+    .set_properties(**{"text-align": "center"})
+    .set_properties(subset=["Asset"], **{"text-align": "left", "font-weight": "bold"})
+)
 
-    # =========================
-    # NORMALIZED PRICE EVOLUTION
-    # =========================
-    st.markdown('<div class="section-title">Normalized price evolution</div>', unsafe_allow_html=True)
+st.dataframe(styled, width="stretch", hide_index=True, height=min(120 + 35 * len(display_df), 520))
+st.caption(
+    "Scores blend return, risk, momentum, RSI positioning and MACD strength. "
+    f"Drawdown is measured over the selected {period} window."
+)
 
-    norm = close_df / close_df.iloc[0] * 100
-    fig_line = go.Figure()
-    for col in norm.columns:
-        fig_line.add_trace(
-            go.Scatter(
-                x=norm.index,
-                y=norm[col],
-                mode="lines",
-                name=col,
-                hovertemplate=f"<b>{col}</b><br>%{{x|%Y-%m-%d}}<br>Base 100 → %{{y:.2f}}<extra></extra>",
-            )
-        )
+
+# =========================
+# RISK / RETURN MATRIX
+# =========================
+st.markdown("## ⚖️ Risk / Return matrix")
+
+scatter_df = metrics_df.reset_index()
+scatter_df["Return_%"] = scatter_df["Return_Annualized"] * 100
+scatter_df["Risk_%"] = scatter_df["Volatility_Annualized"] * 100
+scatter_df["Marker Size"] = scatter_df["Pro_Score"].clip(lower=10)
+
+fig_scatter = px.scatter(
+    scatter_df,
+    x="Risk_%",
+    y="Return_%",
+    color="Pro_Score",
+    size="Marker Size",
+    hover_name="Asset",
+    hover_data={
+        "Risk_%": ":.1f",
+        "Return_%": ":.1f",
+        "Pro_Score": ":.1f",
+        "Signal": True,
+        "Marker Size": False,
+    },
+    color_continuous_scale="Viridis",
+    size_max=34,
+    labels={"Risk_%": "Risk — annualized volatility (%)", "Return_%": "Return — annualized (%)"},
+)
+mean_x = float(scatter_df["Risk_%"].mean())
+mean_y = float(scatter_df["Return_%"].mean())
+fig_scatter.add_hline(y=mean_y, line_dash="dot", line_color="#94a3b8",
+                      annotation_text="Avg return", annotation_position="top right")
+fig_scatter.add_vline(x=mean_x, line_dash="dot", line_color="#94a3b8",
+                      annotation_text="Avg risk", annotation_position="bottom right")
+fig_scatter.update_layout(
+    height=500,
+    template="plotly_white",
+    margin=dict(l=20, r=20, t=30, b=20),
+    coloraxis_colorbar=dict(title="Score"),
+)
+st.plotly_chart(fig_scatter, width="stretch", key="risk_return")
+
+
+# =========================
+# NORMALIZED PERFORMANCE
+# =========================
+st.markdown("## 📈 Relative performance (rebased)")
+
+fig_line = go.Figure()
+plotted_any = False
+for col in closes_df.columns:
+    s = closes_df[col].dropna()
+    if len(s) < 2:
+        continue
+    norm = s / s.iloc[0] * 100
+    plotted_any = True
+    fig_line.add_trace(go.Scatter(
+        x=norm.index, y=norm, mode="lines", name=col,
+        hovertemplate=f"<b>{col}</b><br>%{{x|%Y-%m-%d}}<br>%{{y:.1f}}<extra></extra>",
+    ))
+
+if plotted_any:
+    fig_line.add_hline(y=100, line_width=1, line_color="#cbd5e1")
     fig_line.update_layout(
-        height=460,
+        height=450,
         template="plotly_white",
         hovermode="x unified",
-        xaxis_title="Date",
-        yaxis_title="Base 100",
+        yaxis_title="Rebased value (start = 100)",
         legend=dict(orientation="h"),
         margin=dict(l=20, r=20, t=20, b=20),
     )
-    st.plotly_chart(fig_line, use_container_width=True)
-
-    # =========================
-    # DEEP DIVE TOP ASSET
-    # =========================
-    top_asset = analysis_df.index[0]
-    top_close = close_df[top_asset]
-
-    top_rsi = rsi(top_close)
-    top_macd, top_signal, top_hist = macd(top_close)
-    bb_mid, bb_upper, bb_lower = bollinger(top_close)
-
-    st.markdown(f'<div class="section-title">Deep dive: {top_asset}</div>', unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-
-    with c1:
-        fig_price = go.Figure()
-        fig_price.add_trace(go.Scatter(x=top_close.index, y=top_close, mode="lines", name="Close"))
-        fig_price.add_trace(go.Scatter(x=bb_mid.index, y=bb_mid, mode="lines", name="BB Mid"))
-        fig_price.add_trace(go.Scatter(x=bb_upper.index, y=bb_upper, mode="lines", name="BB Upper"))
-        fig_price.add_trace(go.Scatter(x=bb_lower.index, y=bb_lower, mode="lines", name="BB Lower"))
-        fig_price.update_layout(
-            template="plotly_white",
-            height=430,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis_title="Date",
-            yaxis_title="Price",
-            legend=dict(orientation="h"),
-        )
-        st.plotly_chart(fig_price, use_container_width=True)
-
-    with c2:
-        fig_mom = go.Figure()
-        fig_mom.add_trace(go.Scatter(x=top_macd.index, y=top_macd, mode="lines", name="MACD"))
-        fig_mom.add_trace(go.Scatter(x=top_signal.index, y=top_signal, mode="lines", name="Signal"))
-        fig_mom.add_trace(go.Bar(x=top_hist.index, y=top_hist, name="Histogram"))
-        fig_mom.add_trace(go.Scatter(x=top_rsi.index, y=top_rsi, mode="lines", name="RSI"))
-        fig_mom.update_layout(
-            template="plotly_white",
-            height=430,
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis_title="Date",
-            yaxis_title="Indicator value",
-            legend=dict(orientation="h"),
-        )
-        st.plotly_chart(fig_mom, use_container_width=True)
-
-    # =========================
-    # SIGNALS
-    # =========================
-    st.markdown('<div class="section-title">Signals</div>', unsafe_allow_html=True)
-    sig_counts = analysis_df["Signal"].value_counts().reset_index()
-    sig_counts.columns = ["Signal", "Count"]
-
-    fig_pie = px.pie(sig_counts, names="Signal", values="Count", hole=0.55)
-    fig_pie.update_layout(template="plotly_white", height=380, margin=dict(l=10, r=10, t=10, b=10))
-    st.plotly_chart(fig_pie, use_container_width=True)
-
-    # =========================
-    # NEWS
-    # =========================
-    st.markdown('<div class="section-title">Latest news</div>', unsafe_allow_html=True)
-    news_items = fetch_news(top_asset if not is_crypto_ticker(top_asset) else top_asset.replace("-USD", ""))
-
-    if news_items:
-        for item in news_items[:3]:
-            title = item.get("title") or item.get("headline") or "No title"
-            link = item.get("article_url") or item.get("url") or item.get("link") or "#"
-            publisher = "Unknown"
-            if isinstance(item.get("publisher"), dict):
-                publisher = item["publisher"].get("name", "Unknown")
-            else:
-                publisher = item.get("publisher", "Unknown")
-
-            st.markdown(
-                f"""
-<div class="card" style="margin-bottom:0.8rem;">
-    <div style="font-weight:800;font-size:1.05rem;margin-bottom:0.3rem;">
-        <a href="{link}" target="_blank" style="text-decoration:none;color:#0f172a;">{title}</a>
-    </div>
-    <div style="color:#64748b;font-size:0.9rem;">Source: <b>{publisher}</b></div>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-    else:
-        st.info("No stock news returned for the top asset.")
-
-    # =========================
-    # EXPORT
-    # =========================
-    st.markdown('<div class="section-title">Export</div>', unsafe_allow_html=True)
-    excel_bytes = to_excel(analysis_df, close_df)
-    st.download_button(
-        "📥 Download Excel",
-        data=excel_bytes,
-        file_name=f"FinTech_Opportunities_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
-
-    st.markdown(
-        """
-<div class="footer">
-    Built with Streamlit • Massive API • yfinance • Plotly
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
+    st.plotly_chart(fig_line, width="stretch", key="normalized")
 else:
-    st.info("Mettez vos tickers à gauche puis cliquez sur Launch Analysis.")
+    empty_chart("Not enough overlapping history to compare performance.")
+st.caption("Each asset starts at 100 at its own first available date, so recently listed assets remain comparable.")
+
+
+# =========================
+# CORRELATION HEATMAP
+# =========================
+st.markdown("## 🔗 Correlation matrix")
+corr = closes_df.corr(min_periods=20)
+if corr.shape[0] > 1 and not corr.dropna(how="all").empty:
+    fig_corr = px.imshow(
+        corr,
+        zmin=-1, zmax=1,
+        color_continuous_scale="RdBu_r",
+        text_auto=".2f" if corr.shape[0] <= 8 else False,
+        aspect="auto",
+        labels=dict(color="Correlation"),
+    )
+    fig_corr.update_layout(
+        height=max(380, 60 * corr.shape[0]),
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=20, b=10),
+    )
+    st.plotly_chart(fig_corr, width="stretch", key="correlation")
+    st.caption("Low pairwise correlation suggests stronger diversification when combined.")
+else:
+    empty_chart("Add at least two assets to compute correlations.")
+
+
+# =========================
+# SUGGESTED WEIGHTS
+# =========================
+st.markdown("## 🥧 Suggested portfolio weights")
+weights_df = (
+    metrics_df[["Suggested_Weight_%"]]
+    .sort_values("Suggested_Weight_%")
+)
+fig_weights = px.bar(
+    weights_df,
+    x="Suggested_Weight_%",
+    y=weights_df.index,
+    orientation="h",
+    text="Suggested_Weight_%",
+    color_discrete_sequence=["#4f46e5"],
+    labels={"Suggested_Weight_%": "Weight (%)", "index": ""},
+)
+fig_weights.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+fig_weights.update_layout(
+    height=max(320, 42 * len(weights_df)),
+    template="plotly_white",
+    xaxis_title="Suggested allocation (%)",
+    margin=dict(l=10, r=40, t=10, b=10),
+)
+st.plotly_chart(fig_weights, width="stretch", key="weights")
+st.caption("Weights are proportional to each asset's composite score — informational only, not investment advice.")
+
+
+# =========================
+# DEEP DIVE
+# =========================
+st.markdown("## 🔍 Deep dive")
+default_asset = metrics_df.index[0]
+asset_order = list(metrics_df.index)
+deep_asset = st.selectbox(
+    "Asset",
+    asset_order,
+    index=asset_order.index(default_asset) if default_asset in asset_order else 0,
+    help="Pick any analyzed asset for detailed charts.",
+)
+
+deep_close = closes_df[deep_asset]
+deep_volume = history_map[deep_asset].get("Volume") if deep_asset in history_map else None
+if deep_volume is not None:
+    deep_volume = pd.to_numeric(deep_volume, errors="coerce").reindex(deep_close.index)
+
+bb_mid, bb_up, bb_low = an.bollinger(deep_close)
+macd_line, macd_sig, macd_hist = an.macd(deep_close)
+rsi_series = an.rsi(deep_close)
+
+tab_price, tab_macd, tab_rsi = st.tabs(["Price & Bollinger Bands", "MACD", "RSI"])
+
+with tab_price:
+    fig_price = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22],
+        vertical_spacing=0.03,
+    )
+    fig_price.add_trace(go.Scatter(
+        x=deep_close.index, y=deep_close, name="Close",
+        line=dict(color="#4f46e5", width=2),
+    ), row=1, col=1)
+    fig_price.add_trace(go.Scatter(x=bb_mid.index, y=bb_mid, name="BB mid",
+                                   line=dict(color="#94a3b8", dash="dot")), row=1, col=1)
+    fig_price.add_trace(go.Scatter(
+        x=bb_up.index, y=bb_up, name="BB upper",
+        line=dict(color="#cbd5e1"), hoverinfo="skip",
+    ), row=1, col=1)
+    fig_price.add_trace(go.Scatter(
+        x=bb_low.index, y=bb_low, name="BB lower", fill="tonexty",
+        fillcolor="rgba(79,70,229,0.06)", line=dict(color="#cbd5e1"), hoverinfo="skip",
+    ), row=1, col=1)
+    if deep_volume is not None and deep_volume.notna().any():
+        fig_price.add_trace(go.Bar(
+            x=deep_close.index, y=deep_volume, name="Volume",
+            marker_color="#c7d2fe", showlegend=False,
+        ), row=2, col=1)
+        fig_price.update_yaxes(title_text="Volume", row=2, col=1)
+    fig_price.update_layout(
+        template="plotly_white", height=480,
+        margin=dict(l=10, r=10, t=10, b=10),
+        yaxis_title_text="Price ($)",
+        legend=dict(orientation="h"),
+    )
+    st.plotly_chart(fig_price, width="stretch", key=f"price_{deep_asset}")
+
+with tab_macd:
+    fig_macd = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                             row_heights=[0.62, 0.38], vertical_spacing=0.05)
+    fig_macd.add_trace(go.Scatter(x=macd_line.index, y=macd_line, name="MACD",
+                                  line=dict(color="#4f46e5")), row=1, col=1)
+    fig_macd.add_trace(go.Scatter(x=macd_sig.index, y=macd_sig, name="Signal",
+                                  line=dict(color="#f59e0b")), row=1, col=1)
+    fig_macd.add_trace(go.Bar(
+        x=macd_hist.index, y=macd_hist, name="Histogram",
+        marker_color=np.where(macd_hist >= 0, "#10b981", "#ef4444"),
+    ), row=2, col=1)
+    fig_macd.update_layout(
+        template="plotly_white", height=430,
+        margin=dict(l=10, r=10, t=10, b=10),
+        yaxis_title_text="MACD",
+        legend=dict(orientation="h"),
+    )
+    st.plotly_chart(fig_macd, width="stretch", key=f"macd_{deep_asset}")
+
+with tab_rsi:
+    fig_rsi = go.Figure()
+    fig_rsi.add_trace(go.Scatter(x=rsi_series.index, y=rsi_series, name="RSI(14)",
+                                 line=dict(color="#4f46e5")))
+    fig_rsi.add_hrect(y0=30, y1=70, fillcolor="rgba(16,185,129,0.07)",
+                      line_width=0, annotation_text="Neutral zone",
+                      annotation_font_size=11, annotation_font_color="#94a3b8")
+    fig_rsi.add_hline(y=70, line_dash="dash", line_color="#ef4444")
+    fig_rsi.add_hline(y=30, line_dash="dash", line_color="#059669")
+    fig_rsi.update_layout(
+        template="plotly_white", height=400,
+        yaxis_range=[0, 100],
+        yaxis_title_text="RSI",
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_rsi, width="stretch", key=f"rsi_{deep_asset}")
+
+latest_rsi = rsi_series.dropna().iloc[-1] if rsi_series.notna().any() else None
+if latest_rsi is not None:
+    zone = "oversold" if latest_rsi < 30 else "overbought" if latest_rsi > 70 else "neutral"
+    st.caption(f"Latest RSI(14) for {deep_asset}: **{latest_rsi:.1f}** ({zone}).")
+
+
+# =========================
+# SIGNAL DISTRIBUTION
+# =========================
+st.markdown("## 🚦 Signal distribution")
+sig_counts = metrics_df["Signal"].value_counts()
+sig_df = pd.DataFrame({"Signal": sig_counts.index.astype(str), "Count": sig_counts.values})
+signal_order = [s for s in an.SIGNAL_ORDER if s in set(sig_df["Signal"])]
+c_pie, c_legend = st.columns([3, 2])
+with c_pie:
+    fig_pie = px.pie(
+        sig_df,
+        names="Signal",
+        values="Count",
+        hole=0.58,
+        color="Signal",
+        color_discrete_map=an.SIGNAL_COLORS,
+        category_orders={"Signal": signal_order},
+    )
+    fig_pie.update_traces(textinfo="percent", textfont_size=13)
+    fig_pie.update_layout(
+        height=360, template="plotly_white",
+        margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False,
+    )
+    st.plotly_chart(fig_pie, width="stretch", key="signals")
+with c_legend:
+    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
+    for signal_name, count in sig_counts.items():
+        color = an.SIGNAL_COLORS.get(signal_name, "#64748b")
+        st.markdown(
+            f"""
+<div style="display:flex;justify-content:space-between;align-items:center;
+            padding:0.42rem 0;border-bottom:1px solid #f1f5f9;">
+  <span>{signal_pill(signal_name)}</span>
+  <b>{count}</b>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+
+# =========================
+# NEWS
+# =========================
+st.markdown("## 📰 Latest news")
+
+news_candidates = [
+    t if not is_crypto(t) else t.rsplit("-", 1)[0]
+    for t in metrics_df.index
+]
+news_symbol = st.selectbox("Show news for", news_candidates, index=0)
+
+news_items = massive_news(news_symbol, MASSIVE_API_KEY, limit=5) if MASSIVE_API_KEY else []
+if news_items:
+    for item in news_items[:5]:
+        title = item.get("title") or item.get("headline") or "Untitled"
+        link = item.get("article_url") or item.get("url") or item.get("link") or "#"
+        publisher_obj = item.get("publisher")
+        if isinstance(publisher_obj, dict):
+            publisher = publisher_obj.get("name", "Unknown source")
+        else:
+            publisher = publisher_obj or "Unknown source"
+        published = item.get("published_utc") or item.get("published_at") or ""
+        date_label = ""
+        if published:
+            try:
+                date_label = " · " + datetime.fromisoformat(published.replace("Z", "+00:00")).strftime("%d %b %Y")
+            except ValueError:
+                date_label = ""
+
+        st.markdown(
+            f"""
+<div class="news-card">
+  <a href="{html.escape(link, quote=True)}" target="_blank" rel="noopener noreferrer">{html.escape(title)}</a>
+  <div class="news-meta">{html.escape(str(publisher))}{date_label}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+else:
+    st.info(
+        "No news available here. News requires a Massive API key and coverage "
+        "for the selected symbol."
+    )
+
+
+# =========================
+# EXPORT
+# =========================
+st.markdown("## 📤 Export")
+exp_col1, exp_col2, _ = st.columns([1, 1, 2])
+
+with exp_col1:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        metrics_df.reset_index().to_excel(writer, sheet_name="Opportunities", index=False)
+        closes_df.to_excel(writer, sheet_name="Historical_Close")
+    st.download_button(
+        "⬇️ Download Excel report",
+        data=buffer.getvalue(),
+        file_name=f"finscope_{datetime.now():%Y%m%d_%H%M}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        width="stretch",
+    )
+with exp_col2:
+    st.download_button(
+        "⬇️ Download CSV",
+        data=metrics_df.reset_index().to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"finscope_{datetime.now():%Y%m%d_%H%M}.csv",
+        mime="text/csv",
+        width="stretch",
+    )
+
+
+# =========================
+# FOOTER
+# =========================
+sources_used = sorted({SOURCE_LABELS.get(str(s), str(s)) for s in metrics_df["Source"].dropna()})
+st.markdown(
+    f"""
+<div class="footer">
+  <b>FinScope</b> · Data: {' & '.join(sources_used) or 'historical closes'} · Built with Streamlit, Plotly &amp; pandas<br/>
+  ⚠️ For research and education only — not financial advice. Past performance does not guarantee future results.
+</div>
+""",
+    unsafe_allow_html=True,
+)
